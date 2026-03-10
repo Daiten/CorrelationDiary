@@ -205,6 +205,7 @@ let filterTag = ''; // tag name (kept for entry-row highlighting)
 let filterCat = '';  // category filter on log view
 let corrMin = 0;
 let corrMinDays = 3; // minimum co-occurrences to show
+let corrRequireVariance = true; // hide pairs where binary side has no variance
 let corrSort = {col:'phi', dir:'desc'};
 let corrSearch = '';
 let corrCatA = '';
@@ -710,9 +711,10 @@ function computeCorrelations() {
         }
         const r=spearman(xs,ys);
         if(r===null) continue;
-        // Keep direction: a is cause, b is effect regardless of which is numeric
-        const phi = aNum ? r : r; // direction preserved by role assignment
-        results.push({a,b,phi,coOccurrences:xs.length,type:aNum?'num-bin':'bin-num'});
+        const phi = r;
+        const binValues = aNum ? ys : xs;
+        const binaryVariance = binValues.some(v=>v===0) && binValues.some(v=>v===1);
+        results.push({a,b,phi,coOccurrences:xs.length,type:aNum?'num-bin':'bin-num',binaryVariance});
       }
     }
   }
@@ -960,6 +962,7 @@ function renderCorrelations() {
   let visible = allCorrs.filter(c => {
     if(Math.abs(c.phi) < corrMin) return false;
     if(c.coOccurrences < corrMinDays) return false;
+    if(corrRequireVariance && c.binaryVariance === false) return false;
     if(corrSearch){ const s=corrSearch.toLowerCase(); if(!c.a.includes(s)&&!c.b.includes(s)) return false; }
     if(corrCatA && tagCategory(c.a) !== corrCatA) return false;
     if(corrCatB && tagCategory(c.b) !== corrCatB) return false;
@@ -993,6 +996,10 @@ function renderCorrelations() {
         oninput="corrMinDays=+this.value;document.getElementById('corr-min-days-val').textContent=this.value;renderCorrelations()"
         style="width:80px"/>
       <span id="corr-min-days-val" style="color:#7dd3fc;font-size:11px;min-width:18px">${corrMinDays}</span>
+      <label style="display:flex;align-items:center;gap:5px;cursor:pointer;color:#4a6080;font-size:11px;margin-left:6px;user-select:none" title="Hide numeric↔binary pairs where the binary tag was always present or always absent — these produce spurious ±1.000 results">
+        <input type="checkbox" ${corrRequireVariance?'checked':''} onchange="corrRequireVariance=this.checked;renderCorrelations()" style="accent-color:#00d4ff;cursor:pointer"/>
+        require variance
+      </label>
       <input class="corr-search" placeholder="🔍 filter by tag…" value="${escHtml(corrSearch)}"
         oninput="corrSearch=this.value;renderCorrelations()"/>
       <span style="color:#2a4060;font-size:11px;margin-left:4px">${visible.length} pair${visible.length===1?'':'s'}</span>
