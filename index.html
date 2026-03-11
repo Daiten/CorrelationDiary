@@ -62,7 +62,9 @@
   .empty{color:#2a3a55;text-align:center;padding:60px 0;}
 
   /* ── CORRELATIONS ───────────────────────────────────── */
-  .corr-controls{display:flex;align-items:center;gap:10px;margin-bottom:16px;flex-wrap:wrap;}
+  .corr-controls{display:flex;align-items:center;gap:8px;margin-bottom:16px;flex-wrap:wrap;}
+  .ctrl-group{display:inline-flex;align-items:center;gap:6px;}
+  .ctrl-group input[type=range]{width:90px;}
   .corr-search{background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.1);border-radius:3px;color:#e0eaf8;font-family:inherit;font-size:12px;padding:6px 12px;outline:none;transition:border-color 0.2s;width:180px;}
   .corr-search:focus{border-color:#00aaff;}
   .corr-table{display:grid;gap:1px;}
@@ -212,7 +214,22 @@
 
     /* Numeric panel */
     .num-row{gap:6px;}
-    input[type=range].num-slider{width:120px;}
+    input[type=range].num-slider{width:100%;}
+
+    /* Sliders — much bigger touch targets on mobile */
+    input[type=range]{
+      width:100%;
+      height:28px;
+      cursor:pointer;
+    }
+    /* Override corr-controls slider widths to fill available space */
+    .corr-controls input[type=range]{width:100px;}
+
+    /* Corr controls: each ctrl-group on its own row */
+    .corr-controls{flex-direction:column;align-items:stretch;gap:10px;}
+    .ctrl-group{display:flex;align-items:center;gap:10px;width:100%;}
+    .ctrl-group input[type=range]{flex:1;min-width:0;}
+    .corr-search{width:100%;}
   }
 </style>
 </head>
@@ -728,10 +745,7 @@ function buildTagPanel(tag) {
   // Compute top correlations for this tag at lag 0 and lag 1
   const sections = [];
   for(const lag of [0, 1]) {
-    const prev = corrLag;
-    corrLag = lag;
-    const all = computeCorrelations();
-    corrLag = prev;
+    const all = computeCorrelationsWithLag(lag);
 
     // Pairs where this tag is involved (either side)
     const pairs = all.filter(p => p.a===tag || p.b===tag)
@@ -815,19 +829,49 @@ function canBeEffect(tag) {
 
 // ── Spearman rank correlation ────────────────────────────
 function spearman(xs, ys) {
-  // xs and ys are paired numeric arrays (same length, >= 3)
+  // Spearman rank correlation with proper tied-rank averaging
   const n = xs.length;
   if(n < 3) return null;
+
   const rank = arr => {
+    // Build sorted index list
     const sorted = [...arr].map((v,i)=>({v,i})).sort((a,b)=>a.v-b.v);
     const r = new Array(n);
-    for(let i=0;i<n;i++) r[sorted[i].i] = i+1;
+    let i = 0;
+    while(i < n) {
+      // Find run of equal values (ties)
+      let j = i;
+      while(j < n && sorted[j].v === sorted[i].v) j++;
+      // Average rank for this tie group (ranks are 1-indexed)
+      const avgRank = (i + 1 + j) / 2;
+      for(let k = i; k < j; k++) r[sorted[k].i] = avgRank;
+      i = j;
+    }
     return r;
   };
+
   const rx = rank(xs), ry = rank(ys);
-  let d2 = 0;
-  for(let i=0;i<n;i++) d2 += (rx[i]-ry[i])**2;
-  return 1 - (6*d2)/(n*(n*n-1));
+
+  // Use Pearson formula on ranks (more accurate than d² formula under ties)
+  const mean = arr => arr.reduce((a,b)=>a+b,0)/n;
+  const mx = mean(rx), my = mean(ry);
+  let num=0, dx2=0, dy2=0;
+  for(let i=0;i<n;i++){
+    const dx=rx[i]-mx, dy=ry[i]-my;
+    num+=dx*dy; dx2+=dx*dx; dy2+=dy*dy;
+  }
+  const denom = Math.sqrt(dx2*dy2);
+  if(!denom) return null; // no variance in one variable
+  return num/denom;
+}
+
+function computeCorrelationsWithLag(lag) {
+  // Wrapper that runs computeCorrelations with a specific lag without touching global state
+  const prev = corrLag;
+  corrLag = lag;
+  const result = computeCorrelations();
+  corrLag = prev;
+  return result;
 }
 
 function computeCorrelations() {
@@ -1201,31 +1245,36 @@ function renderCorrelations() {
 
   el.innerHTML = `
     <div class="corr-controls">
-      <span style="color:#4a6080;font-size:11px">min |φ|</span>
-      <input type="range" min="0" max="100" value="${corrMin*100}"
-        oninput="document.getElementById('corr-min-val').textContent=(this.value/100).toFixed(2)"
-        onchange="corrMin=this.value/100;renderCorrelations()"
-        style="width:110px"/>
-      <span id="corr-min-val" style="color:#7dd3fc;font-size:11px;min-width:28px">${corrMin.toFixed(2)}</span>
-      <span style="color:#4a6080;font-size:11px;margin-left:6px">min days</span>
-      <input type="range" min="1" max="20" value="${corrMinDays}"
-        oninput="document.getElementById('corr-min-days-val').textContent=this.value"
-        onchange="corrMinDays=+this.value;renderCorrelations()"
-        style="width:80px"/>
-      <span id="corr-min-days-val" style="color:#7dd3fc;font-size:11px;min-width:18px">${corrMinDays}</span>
-      <label style="display:flex;align-items:center;gap:5px;cursor:pointer;color:#4a6080;font-size:11px;margin-left:6px;user-select:none" title="Hide numeric↔binary pairs where the binary tag was always present or always absent — these produce spurious ±1.000 results">
-        <input type="checkbox" ${corrRequireVariance?'checked':''} onchange="corrRequireVariance=this.checked;renderCorrelations()" style="accent-color:#00d4ff;cursor:pointer"/>
+      <div class="ctrl-group">
+        <span style="color:#4a6080;font-size:11px;white-space:nowrap">min |φ|</span>
+        <input type="range" min="0" max="100" value="${corrMin*100}"
+          oninput="document.getElementById('corr-min-val').textContent=(this.value/100).toFixed(2)"
+          onchange="corrMin=this.value/100;renderCorrelations()"/>
+        <span id="corr-min-val" style="color:#7dd3fc;font-size:11px;min-width:28px">${corrMin.toFixed(2)}</span>
+      </div>
+      <div class="ctrl-group">
+        <span style="color:#4a6080;font-size:11px;white-space:nowrap">min days</span>
+        <input type="range" min="1" max="20" value="${corrMinDays}"
+          oninput="document.getElementById('corr-min-days-val').textContent=this.value"
+          onchange="corrMinDays=+this.value;renderCorrelations()"/>
+        <span id="corr-min-days-val" style="color:#7dd3fc;font-size:11px;min-width:18px">${corrMinDays}</span>
+      </div>
+      <div class="ctrl-group">
+        <span style="color:#4a6080;font-size:11px;white-space:nowrap">lag</span>
+        <input type="range" min="0" max="7" value="${corrLag}"
+          oninput="document.getElementById('corr-lag-val').textContent=this.value=='0'?'same day':this.value+'d'"
+          onchange="corrLag=+this.value;renderCorrelations()"/>
+        <span id="corr-lag-val" style="color:#7dd3fc;font-size:11px;min-width:50px">${corrLag===0?'same day':corrLag+'d'}</span>
+      </div>
+      <label class="ctrl-group" style="cursor:pointer;color:#4a6080;font-size:11px;user-select:none;white-space:nowrap" title="Hide numeric↔binary pairs where the binary tag was always present or always absent">
+        <input type="checkbox" ${corrRequireVariance?'checked':''} onchange="corrRequireVariance=this.checked;renderCorrelations()" style="accent-color:#00d4ff;cursor:pointer;width:auto;height:auto;flex-shrink:0"/>
         require variance
       </label>
-      <span style="color:#4a6080;font-size:11px;margin-left:6px">lag</span>
-      <input type="range" min="0" max="7" value="${corrLag}"
-        oninput="document.getElementById('corr-lag-val').textContent=this.value=='0'?'same day':this.value+'d'"
-        onchange="corrLag=+this.value;renderCorrelations()"
-        style="width:80px"/>
-      <span id="corr-lag-val" style="color:#7dd3fc;font-size:11px;min-width:50px">${corrLag===0?'same day':corrLag+'d'}</span>
-      <input class="corr-search" placeholder="🔍 filter by tag…" value="${escHtml(corrSearch)}"
-        oninput="corrSearch=this.value;_debouncedRenderCorr()"/>
-      <span style="color:#2a4060;font-size:11px;margin-left:4px">${visible.length} pair${visible.length===1?'':'s'}</span>
+      <div class="ctrl-group" style="flex:1;min-width:160px">
+        <input class="corr-search" placeholder="🔍 filter by tag…" value="${escHtml(corrSearch)}"
+          oninput="corrSearch=this.value;_debouncedRenderCorr()" style="width:100%"/>
+        <span style="color:#2a4060;font-size:11px;white-space:nowrap">${visible.length}p</span>
+      </div>
     </div>
     ${cats.length ? `<div style="margin-bottom:10px;display:flex;flex-direction:column;gap:5px">
       <div style="display:flex;align-items:center;flex-wrap:wrap;gap:4px">${catChips('a')}</div>
