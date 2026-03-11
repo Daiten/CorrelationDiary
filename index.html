@@ -152,7 +152,10 @@
   .profile-bar-track{flex:1;height:8px;background:#0e1a28;border-radius:2px;overflow:hidden;}
   .profile-bar-fill{height:100%;border-radius:2px;transition:width 0.3s;}
   .profile-bar-val{font-size:10px;color:#4a6080;min-width:28px;text-align:right;}
-  .profile-tag-picker{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:20px;}
+  .profile-tag-picker{display:flex;align-items:center;gap:10px;margin-bottom:20px;}
+  .profile-select{background:#0d1520;border:1px solid #1e3050;border-radius:4px;color:#e0eaf8;font-family:inherit;font-size:14px;padding:8px 12px;outline:none;cursor:pointer;min-width:200px;max-width:100%;}
+  .profile-select:focus{border-color:#00aaff;}
+  .profile-select option{background:#0d1520;color:#e0eaf8;}
   @media(max-width:600px){.profile-grid{grid-template-columns:1fr;}}
 
   /* ════════════════════════════════════════════════════
@@ -1351,13 +1354,12 @@ function renderHeatmap() {
   // Auto-select first tag if none chosen or chosen tag no longer exists
   if(!profileTag || !tags.includes(profileTag)) profileTag = tags[0];
 
-  // ── Tag picker ──
+  // ── Tag picker — compact dropdown ──
   const pickerHtml = `<div class="profile-tag-picker">
-    ${tags.map(t => {
-      const active = t===profileTag;
-      const ps = tagPillStyle(t);
-      return `<span class="tag-pill ${active?'active':''}" style="${ps}" onclick="profileTag='${escHtml(t)}';renderHeatmap()">${tagVisualPrefix(t)}${escHtml(t)}</span>`;
-    }).join('')}
+    <span style="color:#2a4060;font-size:11px;letter-spacing:0.08em;text-transform:uppercase;flex-shrink:0">tag</span>
+    <select class="profile-select" onchange="profileTag=this.value;renderHeatmap()">
+      ${tags.map(t=>`<option value="${escHtml(t)}" ${t===profileTag?'selected':''}>${t}</option>`).join('')}
+    </select>
   </div>`;
 
   // ── Gather entries for this tag ──
