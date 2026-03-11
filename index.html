@@ -761,17 +761,18 @@ function buildTagPanel(tag) {
     }
 
     const rows = pairs.map(({a,b,phi,coOccurrences,type}) => {
+      const lowSample = coOccurrences < 7;
       const isA = a===tag;
       const other = isA ? b : a;
       const direction = isA ? '→' : '←';
       const col = phiColor(phi);
       const typeBadge = type==='num-num'?'#↔#':type==='num-bin'?'#→○':type==='bin-num'?'○→#':'○↔○';
-      return `<div class="tag-corr-row">
+      return `<div class="tag-corr-row" style="${lowSample?'opacity:0.65':''}">
         <span style="color:#2a4060;font-size:10px;width:16px;text-align:center;flex-shrink:0">${direction}</span>
         <span class="tag-corr-name" style="${tagPillStyle(other)}">${tagVisualPrefix(other)}${escHtml(other)}</span>
         <span style="color:#2a4060;font-size:10px;flex-shrink:0">${coOccurrences}d</span>
         <span style="color:#2a4060;font-size:9px;flex-shrink:0">${typeBadge}</span>
-        <span class="tag-corr-phi" style="color:${col}">${phi>0?'+':''}${phi.toFixed(2)}</span>
+        <span class="tag-corr-phi" style="color:${col}">${lowSample?'<span class=\"corr-warn\" title=\"Only '+coOccurrences+' days — treat with caution\">!</span> ':''}${phi>0?'+':''}${phi.toFixed(2)}</span>
       </div>`;
     }).join('');
 
