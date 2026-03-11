@@ -205,6 +205,7 @@ let filterTag = ''; // tag name (kept for entry-row highlighting)
 let filterCat = '';  // category filter on log view
 let corrMin = 0;
 let corrMinDays = 3; // minimum co-occurrences to show
+let corrLag = 0;      // day lag: 0=same day, 1=next day, etc.
 let corrRequireVariance = true; // hide pairs where binary side has no variance
 let corrSort = {col:'phi', dir:'desc'};
 let corrSearch = '';
@@ -358,6 +359,19 @@ function formatTime(iso) {
   return new Date(iso).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'});
 }
 function getHour(iso){ return new Date(iso).getHours(); }
+function localDay(iso){
+  // Returns "YYYY-MM-DD" in the user's LOCAL timezone (fixes UTC-date bug)
+  const d = new Date(iso);
+  const pad = n=>String(n).padStart(2,'0');
+  return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
+}
+function addDays(dateStr, n){
+  // Returns a new "YYYY-MM-DD" string n days after dateStr
+  const d = new Date(dateStr+'T12:00:00');
+  d.setDate(d.getDate()+n);
+  const pad = k=>String(k).padStart(2,'0');
+  return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
+}
 
 function allTags() {
   return [...new Set(entries.flatMap(e=>e.tags))].sort();
@@ -638,11 +652,11 @@ function spearman(xs, ys) {
 }
 
 function computeCorrelations() {
-  // Build per-day structures
-  const byDate = {}; // day -> { tag -> earliestMs }
-  const numByDate = {}; // day -> { tag -> latestNumericValue }
+  // Build per-day structures using LOCAL dates (timezone-safe)
+  const byDate = {};    // localDay -> { tag -> earliestMs }
+  const numByDate = {}; // localDay -> { tag -> numeric value }
   for(const e of entries){
-    const day = e.timestamp.slice(0,10);
+    const day = localDay(e.timestamp);
     const ms = new Date(e.timestamp).getTime();
     if(!byDate[day]) byDate[day] = {};
     if(!numByDate[day]) numByDate[day] = {};
@@ -654,7 +668,10 @@ function computeCorrelations() {
     }
   }
 
-  const days = Object.keys(byDate);
+  // causeDay -> effectDay (lag applied to effect lookup)
+  // For lag=0: effect looked up on same day; lag=1: effect looked up on next day, etc.
+  const lag = corrLag;
+  const days = Object.keys(byDate).sort();
   const tags = [...new Set(entries.flatMap(e=>e.tags))];
   if(tags.length < 2 || days.length < 2) return [];
 
@@ -670,17 +687,24 @@ function computeCorrelations() {
       const bNum = isNumericTag(b);
 
       if(!aNum && !bNum) {
-        // ── Binary → Binary: directional phi ──
+        // ── Binary → Binary: directional phi with lag ──
+        // For lag=0: same-day, cause must precede effect within the day
+        // For lag>0: a present on causeDay, b present on causeDay+lag
         let n11=0,n10=0,n01=0,n00=0;
-        for(const day of days){
-          const tA=byDate[day][a], tB=byDate[day][b];
-          const aPresent=tA!==undefined;
-          const bAfterA=tA!==undefined&&tB!==undefined&&tB>tA;
-          const bPresent=tB!==undefined;
-          if(aPresent&&bAfterA) n11++;
-          else if(aPresent&&!bAfterA) n10++;
-          else if(!aPresent&&bPresent) n01++;
-          else n00++;
+        for(const causeDay of days){
+          const effectDay = lag===0 ? causeDay : addDays(causeDay, lag);
+          const tA = byDate[causeDay][a];
+          const tB = byDate[effectDay] ? byDate[effectDay][b] : undefined;
+          const aPresent = tA !== undefined;
+          const bPresent = tB !== undefined;
+          // For same-day: require b after a in time. For cross-day: just presence.
+          const bCounts = lag===0
+            ? (tA!==undefined && tB!==undefined && tB>tA)
+            : bPresent;
+          if(aPresent && bCounts)         n11++;
+          else if(aPresent && !bCounts)   n10++;
+          else if(!aPresent && bPresent)  n01++;
+          else                            n00++;
         }
         const denom=Math.sqrt((n11+n10)*(n01+n00)*(n11+n01)*(n10+n00));
         if(!denom) continue;
@@ -688,10 +712,12 @@ function computeCorrelations() {
         results.push({a,b,phi,coOccurrences:n11,type:'bin-bin'});
 
       } else if(aNum && bNum) {
-        // ── Numeric → Numeric: Spearman on days both have values ──
+        // ── Numeric → Numeric: Spearman with lag ──
         const xs=[], ys=[];
-        for(const day of days){
-          const va=numByDate[day][a], vb=numByDate[day][b];
+        for(const causeDay of days){
+          const effectDay = lag===0 ? causeDay : addDays(causeDay, lag);
+          const va = numByDate[causeDay][a];
+          const vb = numByDate[effectDay] ? numByDate[effectDay][b] : undefined;
           if(va!==undefined && vb!==undefined){ xs.push(va); ys.push(vb); }
         }
         const r=spearman(xs,ys);
@@ -699,22 +725,32 @@ function computeCorrelations() {
         results.push({a,b,phi:r,coOccurrences:xs.length,type:'num-num'});
 
       } else {
-        // ── Numeric → Binary or Binary → Numeric: Spearman(num, presence) ──
-        // numTag is the numeric one; binTag is binary
+        // ── Numeric ↔ Binary: Spearman with lag ──
         const numTag=aNum?a:b, binTag=aNum?b:a;
+        // numTag is always the cause side (a), binTag is effect side (b) if aNum
+        // if !aNum then binTag=a (cause), numTag=b (effect)
         const xs=[], ys=[];
-        for(const day of days){
-          const nv=numByDate[day][numTag];
-          if(nv===undefined) continue;
-          const present=byDate[day][binTag]!==undefined?1:0;
-          xs.push(nv); ys.push(present);
+        for(const causeDay of days){
+          const effectDay = lag===0 ? causeDay : addDays(causeDay, lag);
+          if(aNum){
+            // cause=numeric on causeDay, effect=binary on effectDay
+            const nv = numByDate[causeDay][numTag];
+            if(nv===undefined) continue;
+            const present = (byDate[effectDay] && byDate[effectDay][binTag]!==undefined) ? 1 : 0;
+            xs.push(nv); ys.push(present);
+          } else {
+            // cause=binary on causeDay, effect=numeric on effectDay
+            const present = byDate[causeDay][binTag]!==undefined ? 1 : 0;
+            const nv = numByDate[effectDay] ? numByDate[effectDay][numTag] : undefined;
+            if(nv===undefined) continue;
+            xs.push(present); ys.push(nv);
+          }
         }
         const r=spearman(xs,ys);
         if(r===null) continue;
-        const phi = r;
         const binValues = aNum ? ys : xs;
         const binaryVariance = binValues.some(v=>v===0) && binValues.some(v=>v===1);
-        results.push({a,b,phi,coOccurrences:xs.length,type:aNum?'num-bin':'bin-num',binaryVariance});
+        results.push({a,b,phi:r,coOccurrences:xs.length,type:aNum?'num-bin':'bin-num',binaryVariance});
       }
     }
   }
@@ -767,7 +803,7 @@ function renderLog() {
   // group by day
   const groups = {};
   for(const e of filtered){
-    const day=e.timestamp.slice(0,10);
+    const day=localDay(e.timestamp);
     if(!groups[day]) groups[day]=[];
     groups[day].push(e);
   }
@@ -988,20 +1024,28 @@ function renderCorrelations() {
     <div class="corr-controls">
       <span style="color:#4a6080;font-size:11px">min |φ|</span>
       <input type="range" min="0" max="100" value="${corrMin*100}"
-        oninput="corrMin=this.value/100;document.getElementById('corr-min-val').textContent=corrMin.toFixed(2);renderCorrelations()"
+        oninput="document.getElementById('corr-min-val').textContent=(this.value/100).toFixed(2)"
+        onchange="corrMin=this.value/100;renderCorrelations()"
         style="width:110px"/>
       <span id="corr-min-val" style="color:#7dd3fc;font-size:11px;min-width:28px">${corrMin.toFixed(2)}</span>
       <span style="color:#4a6080;font-size:11px;margin-left:6px">min days</span>
       <input type="range" min="1" max="20" value="${corrMinDays}"
-        oninput="corrMinDays=+this.value;document.getElementById('corr-min-days-val').textContent=this.value;renderCorrelations()"
+        oninput="document.getElementById('corr-min-days-val').textContent=this.value"
+        onchange="corrMinDays=+this.value;renderCorrelations()"
         style="width:80px"/>
       <span id="corr-min-days-val" style="color:#7dd3fc;font-size:11px;min-width:18px">${corrMinDays}</span>
       <label style="display:flex;align-items:center;gap:5px;cursor:pointer;color:#4a6080;font-size:11px;margin-left:6px;user-select:none" title="Hide numeric↔binary pairs where the binary tag was always present or always absent — these produce spurious ±1.000 results">
         <input type="checkbox" ${corrRequireVariance?'checked':''} onchange="corrRequireVariance=this.checked;renderCorrelations()" style="accent-color:#00d4ff;cursor:pointer"/>
         require variance
       </label>
+      <span style="color:#4a6080;font-size:11px;margin-left:6px">lag</span>
+      <input type="range" min="0" max="7" value="${corrLag}"
+        oninput="document.getElementById('corr-lag-val').textContent=this.value=='0'?'same day':this.value+'d'"
+        onchange="corrLag=+this.value;renderCorrelations()"
+        style="width:80px"/>
+      <span id="corr-lag-val" style="color:#7dd3fc;font-size:11px;min-width:50px">${corrLag===0?'same day':corrLag+'d'}</span>
       <input class="corr-search" placeholder="🔍 filter by tag…" value="${escHtml(corrSearch)}"
-        oninput="corrSearch=this.value;renderCorrelations()"/>
+        oninput="corrSearch=this.value;_debouncedRenderCorr()"/>
       <span style="color:#2a4060;font-size:11px;margin-left:4px">${visible.length} pair${visible.length===1?'':'s'}</span>
     </div>
     ${cats.length ? `<div style="margin-bottom:10px;display:flex;flex-direction:column;gap:5px">
