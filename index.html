@@ -143,6 +143,13 @@
   .num-input:focus{border-color:#00aaff;}
   input[type=range].num-slider{width:160px;accent-color:#00d4ff;}
   .corr-type{font-size:9px;letter-spacing:0.06em;padding:1px 5px;border-radius:2px;opacity:0.7;}
+  .corr-warn{display:inline-block;font-size:10px;font-weight:700;color:#ffb74d;background:rgba(255,180,80,0.12);border:1px solid rgba(255,180,80,0.35);border-radius:2px;padding:0px 5px;cursor:default;flex-shrink:0;}
+  .impact-table{width:100%;border-collapse:collapse;font-size:12px;margin-top:8px;}
+  .impact-table th{text-align:left;color:#2a4060;font-size:10px;letter-spacing:0.08em;text-transform:uppercase;padding:4px 8px;border-bottom:1px solid #1a2535;cursor:pointer;user-select:none;white-space:nowrap;}
+  .impact-table th:hover{color:#4a7090;}
+  .impact-table td{padding:5px 8px;border-bottom:1px solid #0e1825;vertical-align:middle;}
+  .impact-table tr:hover td{background:rgba(255,255,255,0.02);}
+  .impact-score{font-weight:700;font-size:14px;}
   /* profile view */
   .profile-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:20px;}
   .profile-card{background:rgba(255,255,255,0.02);border:1px solid #1a2535;border-radius:4px;padding:14px 16px;}
@@ -343,6 +350,7 @@ let corrRequireVariance = true; // hide pairs where binary side has no variance
 let corrSort = {col:'phi', dir:'desc'};
 let corrSearch = '';
 let corrCatA = '';
+let impactSort = {col:'combined', dir:'desc'};
 let corrCatB = '';
 let pendingRoleTags = [];
 let pendingNumericTags = []; // numeric tags in current log entry awaiting value input
@@ -1402,6 +1410,51 @@ function renderCorrelations() {
       <span style="color:#4fc3f7">○→# ρ</span>: binary presence vs. numeric value.<br>
       <span style="color:#00ff9d">+1.0</span> = strong positive · <span style="color:#ff4d6d">−1.0</span> = strong negative · <span style="color:#8892a4">0</span> = no pattern.
     </div>
+
+    ${(()=>{
+      const causeTags = allTags().filter(t => canBeCause(t));
+      const rows = causeTags.map(t => {
+        const s0 = computeCauseScore(t, 0);
+        const s1 = computeCauseScore(t, 1);
+        if(s0===null && s1===null) return null;
+        const combined = (s0!==null && s1!==null) ? (s0+s1)/2 : (s0??s1);
+        return {tag:t, combined, s0, s1};
+      }).filter(Boolean);
+
+      if(!rows.length) return '<div style="color:#2a4060;font-size:11px;margin-top:24px;padding:12px;border:1px solid #1a2535;border-radius:4px">No impact scores yet — tag your effects as 😊 or 😞 in the Tags screen to populate this table.</div>';
+
+      rows.sort((a,b) => {
+        const av = impactSort.col==='tag' ? a.tag : impactSort.col==='s0' ? (a.s0??-99) : impactSort.col==='s1' ? (a.s1??-99) : a.combined;
+        const bv = impactSort.col==='tag' ? b.tag : impactSort.col==='s0' ? (b.s0??-99) : impactSort.col==='s1' ? (b.s1??-99) : b.combined;
+        if(typeof av==='string') return impactSort.dir==='asc' ? av.localeCompare(bv) : bv.localeCompare(av);
+        return impactSort.dir==='asc' ? av-bv : bv-av;
+      });
+
+      const arw = col => impactSort.col!==col ? '<span style="color:#1a2a3a">↕</span>' : impactSort.dir==='desc'?'↓':'↑';
+      const setSort = col => `impactSort={col:'${col}',dir:impactSort.col==='${col}'&&impactSort.dir==='desc'?'asc':'desc'};renderCorrelations()`;
+      const fmtScore = v => {
+        if(v===null) return '<span style="color:#1a3050">—</span>';
+        const sc = v>0.1?'#00ff9d':v<-0.1?'#ff4d6d':'#8892a4';
+        return '<span style="color:'+sc+';font-weight:600">'+(v>0?'+':'')+v.toFixed(2)+'</span>';
+      };
+
+      return '<div style="margin-top:28px">'
+        +'<div class="section-label" style="margin-bottom:6px">— cause impact scores —</div>'
+        +'<div style="color:#2a4060;font-size:10px;margin-bottom:10px">Σ(φ × effect sentiment × confidence) · tag effects 😊/😞 in Tags · click headers to sort · click a tag to open its profile</div>'
+        +'<table class="impact-table"><thead><tr>'
+        +'<th onclick="'+setSort('tag')+'">cause '+arw('tag')+'</th>'
+        +'<th onclick="'+setSort('combined')+'" style="text-align:right">combined '+arw('combined')+'</th>'
+        +'<th onclick="'+setSort('s0')+'" style="text-align:right">same day '+arw('s0')+'</th>'
+        +'<th onclick="'+setSort('s1')+'" style="text-align:right">lag 1d '+arw('s1')+'</th>'
+        +'</tr></thead><tbody>'
+        +rows.map(({tag,combined,s0,s1})=>'<tr>'
+          +'<td><span class="tag-pill" style="'+tagPillStyle(tag)+';cursor:pointer" onclick="profileTag=\''+escHtml(tag)+'\';switchView(\'heatmap\')" title="Open profile">'+tagVisualPrefix(tag)+escHtml(tag)+'</span></td>'
+          +'<td style="text-align:right"><span class="impact-score">'+fmtScore(combined)+'</span></td>'
+          +'<td style="text-align:right">'+fmtScore(s0)+'</td>'
+          +'<td style="text-align:right">'+fmtScore(s1)+'</td>'
+          +'</tr>').join('')
+        +'</tbody></table></div>';
+    })()}
   `;
 }
 
