@@ -275,6 +275,7 @@
     <button class="nav-btn" onclick="switchView('correlations')">correlations</button>
     <button class="nav-btn" onclick="switchView('heatmap')">profile</button>
     <button class="nav-btn" onclick="switchView('tags')">tags</button>
+    <button class="nav-btn" onclick="switchView('impact')">impact</button>
   </div>
 </div>
 
@@ -323,6 +324,10 @@
     <div class="tag-panel-body" id="tag-panel-body"></div>
   </div>
 
+  <div id="view-impact" style="display:none">
+    <div id="impact-content"></div>
+  </div>
+
   <!-- TAGS VIEW -->
   <div id="view-tags" style="display:none">
     <div class="section-label">— tags · categories · roles —</div>
@@ -361,6 +366,7 @@ try { const r = localStorage.getItem(ROLES_KEY);   if(r) tagRoles = JSON.parse(r
 try { const r = localStorage.getItem(META_KEY);    if(r) tagMeta  = JSON.parse(r); } catch{}
 
 function save() {
+  impactCached = null; // invalidate impact cache on any data change
   try { localStorage.setItem(STORAGE_KEY, JSON.stringify(entries)); } catch{}
   try { localStorage.setItem(ROLES_KEY,   JSON.stringify(tagRoles)); } catch{}
   try { localStorage.setItem(META_KEY,    JSON.stringify(tagMeta));  } catch{}
@@ -376,6 +382,7 @@ function setRole(tag, role) {
   if(picker) renderInlineRolePicker(pendingRoleTags);
   if(currentView==='tags') renderTags();
   if(currentView==='correlations') renderCorrelations();
+  if(currentView==='impact') renderImpactShell();
   // refresh tag pills in log to show updated badges
   if(currentView==='log') renderLog();
 }
@@ -575,10 +582,10 @@ function allTags() {
 
 function switchView(v) {
   currentView = v;
-  ['log','correlations','heatmap','tags'].forEach(x=>{
+  ['log','correlations','heatmap','tags','impact'].forEach(x=>{
     document.getElementById('view-'+x).style.display = x===v?'block':'none';
     document.querySelectorAll('.nav-btn').forEach((b,i)=>{
-      b.classList.toggle('active', ['log','correlations','heatmap','tags'][i]===v);
+      b.classList.toggle('active', ['log','correlations','heatmap','tags','impact'][i]===v);
     });
   });
   render();
@@ -1067,6 +1074,7 @@ function render() {
   else if(currentView==='correlations') renderCorrelations();
   else if(currentView==='heatmap') renderHeatmap();
   else if(currentView==='tags') renderTags();
+  else if(currentView==='impact') renderImpactShell();
 }
 
 function renderLog() {
@@ -1411,51 +1419,82 @@ function renderCorrelations() {
       <span style="color:#00ff9d">+1.0</span> = strong positive · <span style="color:#ff4d6d">−1.0</span> = strong negative · <span style="color:#8892a4">0</span> = no pattern.
     </div>
 
-    ${(()=>{
-      const causeTags = allTags().filter(t => canBeCause(t));
-      const rows = causeTags.map(t => {
-        const s0 = computeCauseScore(t, 0);
-        const s1 = computeCauseScore(t, 1);
-        if(s0===null && s1===null) return null;
-        const combined = (s0!==null && s1!==null) ? (s0+s1)/2 : (s0??s1);
-        return {tag:t, combined, s0, s1};
-      }).filter(Boolean);
-
-      if(!rows.length) return '<div style="color:#2a4060;font-size:11px;margin-top:24px;padding:12px;border:1px solid #1a2535;border-radius:4px">No impact scores yet — tag your effects as 😊 or 😞 in the Tags screen to populate this table.</div>';
-
-      rows.sort((a,b) => {
-        const av = impactSort.col==='tag' ? a.tag : impactSort.col==='s0' ? (a.s0??-99) : impactSort.col==='s1' ? (a.s1??-99) : a.combined;
-        const bv = impactSort.col==='tag' ? b.tag : impactSort.col==='s0' ? (b.s0??-99) : impactSort.col==='s1' ? (b.s1??-99) : b.combined;
-        if(typeof av==='string') return impactSort.dir==='asc' ? av.localeCompare(bv) : bv.localeCompare(av);
-        return impactSort.dir==='asc' ? av-bv : bv-av;
-      });
-
-      const arw = col => impactSort.col!==col ? '<span style="color:#1a2a3a">↕</span>' : impactSort.dir==='desc'?'↓':'↑';
-      const setSort = col => `impactSort={col:'${col}',dir:impactSort.col==='${col}'&&impactSort.dir==='desc'?'asc':'desc'};renderCorrelations()`;
-      const fmtScore = v => {
-        if(v===null) return '<span style="color:#1a3050">—</span>';
-        const sc = v>0.1?'#00ff9d':v<-0.1?'#ff4d6d':'#8892a4';
-        return '<span style="color:'+sc+';font-weight:600">'+(v>0?'+':'')+v.toFixed(2)+'</span>';
-      };
-
-      return '<div style="margin-top:28px">'
-        +'<div class="section-label" style="margin-bottom:6px">— cause impact scores —</div>'
-        +'<div style="color:#2a4060;font-size:10px;margin-bottom:10px">Σ(φ × effect sentiment × confidence) · tag effects 😊/😞 in Tags · click headers to sort · click a tag to open its profile</div>'
-        +'<table class="impact-table"><thead><tr>'
-        +'<th onclick="'+setSort('tag')+'">cause '+arw('tag')+'</th>'
-        +'<th onclick="'+setSort('combined')+'" style="text-align:right">combined '+arw('combined')+'</th>'
-        +'<th onclick="'+setSort('s0')+'" style="text-align:right">same day '+arw('s0')+'</th>'
-        +'<th onclick="'+setSort('s1')+'" style="text-align:right">lag 1d '+arw('s1')+'</th>'
-        +'</tr></thead><tbody>'
-        +rows.map(({tag,combined,s0,s1})=>'<tr>'
-          +'<td><span class="tag-pill" style="'+tagPillStyle(tag)+';cursor:pointer" onclick="profileTag=\''+escHtml(tag)+'\';switchView(\'heatmap\')" title="Open profile">'+tagVisualPrefix(tag)+escHtml(tag)+'</span></td>'
-          +'<td style="text-align:right"><span class="impact-score">'+fmtScore(combined)+'</span></td>'
-          +'<td style="text-align:right">'+fmtScore(s0)+'</td>'
-          +'<td style="text-align:right">'+fmtScore(s1)+'</td>'
-          +'</tr>').join('')
-        +'</tbody></table></div>';
-    })()}
   `;
+}
+
+// ── Impact tab ───────────────────────────────────────────
+let impactCached = null; // null = needs recalc
+
+function renderImpactShell() {
+  const el = document.getElementById('impact-content');
+  const hasSentiment = allTags().some(t => tagSentiment(t));
+  if(!hasSentiment) {
+    el.innerHTML = `<div class="section-label">— cause impact scores —</div>
+      <div style="color:#2a4060;font-size:12px;margin-top:20px;line-height:1.8">
+        No sentiment-tagged effects yet.<br>
+        Go to <strong style="color:#7dd3fc">Tags</strong> and mark your effect tags as 😊 (positive) or 😞 (negative).<br>
+        Then come back here and calculate.
+      </div>`;
+    return;
+  }
+  // Render shell with calculate button — table area filled on demand
+  el.innerHTML = `<div class="section-label" style="margin-bottom:14px">— cause impact scores —</div>
+    <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:16px">
+      <button class="io-btn" onclick="impactCached=null;renderImpactTable()" style="font-size:12px;padding:6px 18px">⟳ calculate</button>
+      <span style="color:#2a4060;font-size:11px">Heavy computation — run manually when needed.</span>
+    </div>
+    <div id="impact-table-area">
+      ${impactCached ? buildImpactTableHtml() : '<div style="color:#2a4060;font-size:11px">Press calculate to run.</div>'}
+    </div>`;
+}
+
+function renderImpactTable() {
+  // Compute and cache, then re-render table area only
+  const causeTags = allTags().filter(t => canBeCause(t));
+  impactCached = causeTags.map(t => {
+    const s0 = computeCauseScore(t, 0);
+    const s1 = computeCauseScore(t, 1);
+    if(s0===null && s1===null) return null;
+    const combined = (s0!==null && s1!==null) ? (s0+s1)/2 : (s0??s1);
+    return {tag:t, combined, s0, s1};
+  }).filter(Boolean);
+  const area = document.getElementById('impact-table-area');
+  if(area) area.innerHTML = buildImpactTableHtml();
+}
+
+function buildImpactTableHtml() {
+  if(!impactCached || !impactCached.length)
+    return '<div style="color:#2a4060;font-size:11px">No scores found — make sure some causes correlate with sentiment-tagged effects.</div>';
+
+  const rows = [...impactCached].sort((a,b) => {
+    const av = impactSort.col==='tag' ? a.tag : impactSort.col==='s0' ? (a.s0??-99) : impactSort.col==='s1' ? (a.s1??-99) : a.combined;
+    const bv = impactSort.col==='tag' ? b.tag : impactSort.col==='s0' ? (b.s0??-99) : impactSort.col==='s1' ? (b.s1??-99) : b.combined;
+    if(typeof av==='string') return impactSort.dir==='asc' ? av.localeCompare(bv) : bv.localeCompare(av);
+    return impactSort.dir==='asc' ? av-bv : bv-av;
+  });
+
+  const arw = col => impactSort.col!==col ? '<span style="color:#1a2a3a">↕</span>' : impactSort.dir==='desc'?'↓':'↑';
+  const setSort = col => `impactSort={col:'${col}',dir:impactSort.col==='${col}'&&impactSort.dir==='desc'?'asc':'desc'};document.getElementById('impact-table-area').innerHTML=buildImpactTableHtml()`;
+  const fmtScore = v => {
+    if(v===null) return '<span style="color:#1a3050">—</span>';
+    const sc = v>0.1?'#00ff9d':v<-0.1?'#ff4d6d':'#8892a4';
+    return '<span style="color:'+sc+';font-weight:600">'+(v>0?'+':'')+v.toFixed(2)+'</span>';
+  };
+
+  return '<div style="color:#2a4060;font-size:10px;margin-bottom:10px">Σ(φ × effect_sentiment × confidence) · click headers to sort · click tag to open profile</div>'
+    +'<table class="impact-table"><thead><tr>'
+    +'<th onclick="'+setSort('tag')+'">cause '+arw('tag')+'</th>'
+    +'<th onclick="'+setSort('combined')+'" style="text-align:right">combined '+arw('combined')+'</th>'
+    +'<th onclick="'+setSort('s0')+'" style="text-align:right">same day '+arw('s0')+'</th>'
+    +'<th onclick="'+setSort('s1')+'" style="text-align:right">lag 1d '+arw('s1')+'</th>'
+    +'</tr></thead><tbody>'
+    +rows.map(({tag,combined,s0,s1})=>'<tr>'
+      +'<td><span class="tag-pill" style="'+tagPillStyle(tag)+';cursor:pointer" onclick="profileTag=\''+escHtml(tag)+'\';switchView(\'heatmap\')" title="Open profile">'+tagVisualPrefix(tag)+escHtml(tag)+'</span></td>'
+      +'<td style="text-align:right"><span class="impact-score">'+fmtScore(combined)+'</span></td>'
+      +'<td style="text-align:right">'+fmtScore(s0)+'</td>'
+      +'<td style="text-align:right">'+fmtScore(s1)+'</td>'
+      +'</tr>').join('')
+    +'</tbody></table>';
 }
 
 function renderHeatmap() {
