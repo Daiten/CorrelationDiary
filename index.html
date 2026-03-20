@@ -784,9 +784,12 @@ function renderInlineRolePicker(tags) {
 function deleteEntry(id) {
   entries = entries.filter(e=>e.id!==id);
   save(); render();
-  // Remove from cloud too
+  // Remove from cloud + record tombstone so other devices know to delete it too
   if(fbUser && typeof colEntries === 'function') {
     colEntries().doc(id).delete().catch(e => console.error('delete sync failed:', e));
+    fbDb.collection('users').doc(fbUser.uid).collection('data').doc('tombstones')
+      .set({ ids: firebase.firestore.FieldValue.arrayUnion(id) }, { merge: true })
+      .catch(e => console.error('tombstone failed:', e));
   }
 }
 
@@ -1909,11 +1912,21 @@ async function fbPullAll() {
   try {
     // Pull entries
     const snap = await colEntries().get();
+
+    // Pull tombstones first so we can filter deleted entries
+    const tombSnap = await fbDb.collection('users').doc(fbUser.uid).collection('data').doc('tombstones').get();
+    const tombstones = new Set(tombSnap.exists ? (tombSnap.data().ids || []) : []);
+
+    // Apply tombstones to local entries too
+    const beforeCount = entries.length;
+    entries = entries.filter(e => !tombstones.has(e.id));
+    if(entries.length < beforeCount) { save(); }
+
     const existingIds = new Set(entries.map(e => e.id));
     let added = 0;
     snap.forEach(doc => {
       const e = doc.data();
-      if(e.id && e.timestamp && Array.isArray(e.tags) && !existingIds.has(e.id)) {
+      if(e.id && e.timestamp && Array.isArray(e.tags) && !existingIds.has(e.id) && !tombstones.has(e.id)) {
         entries.push(e);
         added++;
       }
