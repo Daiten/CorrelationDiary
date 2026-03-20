@@ -1829,19 +1829,14 @@ const DRIVE_FILE_NAME = 'correl-diary-data.json';
 const DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.appdata https://www.googleapis.com/auth/userinfo.email';
 let gAccessToken = null;
 let gUserEmail = null;
-let gClientId = localStorage.getItem('cd-google-client-id') || '';
+let gClientId = localStorage.getItem('cd-google-client-id') || '671693767528-384iaooavgd6ui6d196kh1eae7pgoj5s.apps.googleusercontent.com';
 
 function renderDriveArea() {
   const el = document.getElementById('drive-area');
   if(!el) return;
-  if(!gClientId) {
-    el.innerHTML = `<button class="io-btn" onclick="showClientIdPrompt()" title="Connect Google Drive for cross-device sync" style="border-color:#1a3040;color:#2a5060">☁ connect drive</button>`;
-    return;
-  }
   if(!gAccessToken) {
     el.innerHTML = `
-      <button class="drive-btn" onclick="driveSignIn()">☁ sign in</button>
-      <button class="io-btn" onclick="showClientIdPrompt()" style="font-size:9px;padding:2px 6px" title="Change Client ID">⚙</button>`;
+      <button class="drive-btn" onclick="driveSignIn()">☁ sign in to Drive</button>`;
     return;
   }
   el.innerHTML = `
