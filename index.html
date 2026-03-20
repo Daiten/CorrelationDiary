@@ -101,6 +101,11 @@
   .dt-wrap{display:flex;align-items:center;gap:8px;margin-bottom:8px;}
   .io-btn{background:none;border:1px solid #1e3050;color:#3a6080;font-family:inherit;font-size:11px;letter-spacing:0.06em;padding:4px 12px;border-radius:3px;cursor:pointer;transition:all 0.2s;}
   .io-btn:hover{border-color:#0077cc;color:#7dd3fc;background:rgba(0,120,200,0.08);}
+  .drive-btn{background:none;border:1px solid #1a4030;color:#3a7060;font-family:inherit;font-size:11px;letter-spacing:0.06em;padding:4px 12px;border-radius:3px;cursor:pointer;transition:all 0.2s;}
+  .drive-btn:hover{border-color:#00aa70;color:#00d4aa;background:rgba(0,180,100,0.07);}
+  .drive-btn:disabled{opacity:0.4;cursor:default;}
+  .guser{font-size:10px;color:#2a7060;display:flex;align-items:center;gap:6px;}
+  .gsignin-wrap{display:flex;align-items:center;gap:6px;flex-wrap:wrap;}
   .io-btn.flash-green{border-color:#00ff9d;color:#00ff9d;}
   .io-btn.flash-red{border-color:#ff4d6d;color:#ff4d6d;}
   .role-badge{display:inline-block;border-radius:2px;padding:1px 6px;font-size:10px;letter-spacing:0.06em;font-weight:600;vertical-align:middle;margin-left:3px;}
@@ -255,6 +260,7 @@
     .corr-search{width:100%;}
   }
 </style>
+<script src="https://accounts.google.com/gsi/client" async defer></script>
 </head>
 <body>
 
@@ -263,10 +269,11 @@
     <span class="logo">◈ CORRELdiary</span>
     <span class="subtitle">v1.5 — personal pattern tracker</span>
     <span class="stats" id="stats">0 entries · 0 tags</span>
-    <div style="display:flex;gap:6px;margin-left:16px">
+    <div style="display:flex;gap:6px;align-items:center;margin-left:16px;flex-wrap:wrap">
       <button class="io-btn" onclick="exportData()" title="Export all entries to a JSON backup file">↑ export</button>
       <button class="io-btn" onclick="document.getElementById('import-file').click()" title="Import entries from a previously exported JSON file">↓ import</button>
       <input type="file" id="import-file" accept=".json" style="display:none" onchange="importData(event)"/>
+      <span id="drive-area" class="gsignin-wrap"></span>
     </div>
   </div>
   <div id="import-toast" style="display:none;position:fixed;top:16px;right:20px;background:#003d6b;border:1px solid #0077cc;color:#7dd3fc;font-family:'JetBrains Mono',monospace;font-size:12px;padding:10px 18px;border-radius:3px;z-index:100;transition:opacity 0.4s"></div>
@@ -1817,7 +1824,161 @@ function showToast(msg, type) {
   setTimeout(()=>{ t.style.opacity='0'; setTimeout(()=>t.style.display='none', 400); }, 3000);
 }
 
+// ── Google Drive sync ──────────────────────────────────────
+const DRIVE_FILE_NAME = 'correl-diary-data.json';
+const DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.appdata https://www.googleapis.com/auth/userinfo.email';
+let gAccessToken = null;
+let gUserEmail = null;
+let gClientId = localStorage.getItem('cd-google-client-id') || '';
+
+function renderDriveArea() {
+  const el = document.getElementById('drive-area');
+  if(!el) return;
+  if(!gClientId) {
+    el.innerHTML = `<button class="io-btn" onclick="showClientIdPrompt()" title="Connect Google Drive for cross-device sync" style="border-color:#1a3040;color:#2a5060">☁ connect drive</button>`;
+    return;
+  }
+  if(!gAccessToken) {
+    el.innerHTML = `
+      <button class="drive-btn" onclick="driveSignIn()">☁ sign in</button>
+      <button class="io-btn" onclick="showClientIdPrompt()" style="font-size:9px;padding:2px 6px" title="Change Client ID">⚙</button>`;
+    return;
+  }
+  el.innerHTML = `
+    <span class="guser">☁ ${escHtml(gUserEmail||'signed in')}</span>
+    <button class="drive-btn" onclick="driveSave()" id="drive-save-btn">↑ save</button>
+    <button class="drive-btn" onclick="driveLoad()" id="drive-load-btn">↓ load</button>
+    <button class="io-btn" onclick="driveSignOut()" style="font-size:9px;padding:2px 6px" title="Sign out">✕</button>`;
+}
+
+function showClientIdPrompt() {
+  const id = window.prompt(
+    'Paste your Google OAuth Client ID:\n\n' +
+    'Steps:\n' +
+    '1. Go to console.cloud.google.com\n' +
+    '2. Create project → Enable Google Drive API\n' +
+    '3. Credentials → Create OAuth 2.0 Client ID (Web app)\n' +
+    '4. Add this page\'s URL to Authorized JavaScript origins\n' +
+    '5. Copy the Client ID and paste it here',
+    gClientId
+  );
+  if(id === null) return;
+  gClientId = id.trim();
+  localStorage.setItem('cd-google-client-id', gClientId);
+  gAccessToken = null;
+  gUserEmail = null;
+  renderDriveArea();
+}
+
+function driveSignIn() {
+  if(!gClientId) { showClientIdPrompt(); return; }
+  if(typeof google === 'undefined') {
+    showToast('✕ Google API not loaded — check internet connection', 'red'); return;
+  }
+  const client = google.accounts.oauth2.initTokenClient({
+    client_id: gClientId,
+    scope: DRIVE_SCOPE,
+    callback: async (resp) => {
+      if(resp.error) { showToast('✕ sign-in failed: ' + resp.error, 'red'); return; }
+      gAccessToken = resp.access_token;
+      try {
+        const r = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
+          headers: { Authorization: 'Bearer ' + gAccessToken }
+        });
+        const info = await r.json();
+        gUserEmail = info.email || '';
+      } catch(e) { gUserEmail = ''; }
+      renderDriveArea();
+      showToast('✓ signed in' + (gUserEmail ? ' as ' + gUserEmail : ''), 'green');
+    }
+  });
+  client.requestAccessToken();
+}
+
+function driveSignOut() {
+  if(gAccessToken) google.accounts.oauth2.revoke(gAccessToken, ()=>{});
+  gAccessToken = null;
+  gUserEmail = null;
+  renderDriveArea();
+  showToast('signed out of Google', 'green');
+}
+
+async function driveApiCall(method, url, body, contentType) {
+  const opts = { method, headers: { Authorization: 'Bearer ' + gAccessToken } };
+  if(body !== undefined) {
+    opts.headers['Content-Type'] = contentType || 'application/json';
+    opts.body = typeof body === 'string' ? body : JSON.stringify(body);
+  }
+  const r = await fetch(url, opts);
+  if(r.status === 401) {
+    gAccessToken = null; renderDriveArea();
+    throw new Error('Session expired — please sign in again');
+  }
+  return r;
+}
+
+async function driveFindFile() {
+  const r = await driveApiCall('GET',
+    `https://www.googleapis.com/drive/v3/files?spaces=appDataFolder&q=name='${DRIVE_FILE_NAME}'&fields=files(id,modifiedTime)`
+  );
+  const data = await r.json();
+  return (data.files && data.files[0]) || null;
+}
+
+async function driveSave() {
+  const btn = document.getElementById('drive-save-btn');
+  if(btn) btn.disabled = true;
+  try {
+    const payload = JSON.stringify({ version:2, exportedAt:new Date().toISOString(), entries, tagRoles, tagMeta }, null, 2);
+    const existing = await driveFindFile();
+    if(existing) {
+      await driveApiCall('PATCH',
+        `https://www.googleapis.com/upload/drive/v3/files/${existing.id}?uploadType=media`,
+        payload, 'application/json'
+      );
+    } else {
+      const boundary = 'cdboundary';
+      const meta = JSON.stringify({ name: DRIVE_FILE_NAME, parents: ['appDataFolder'] });
+      const body = `--${boundary}\r\nContent-Type: application/json\r\n\r\n${meta}\r\n--${boundary}\r\nContent-Type: application/json\r\n\r\n${payload}\r\n--${boundary}--`;
+      await driveApiCall('POST',
+        'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart',
+        body, `multipart/related; boundary=${boundary}`
+      );
+    }
+    showToast(`✓ saved to Drive (${entries.length} entries)`, 'green');
+  } catch(e) {
+    showToast('✕ Drive save failed: ' + e.message, 'red');
+  }
+  if(btn) btn.disabled = false;
+}
+
+async function driveLoad() {
+  const btn = document.getElementById('drive-load-btn');
+  if(btn) btn.disabled = true;
+  try {
+    const file = await driveFindFile();
+    if(!file) { showToast('No Drive backup found yet — save first', 'red'); if(btn) btn.disabled=false; return; }
+    const r = await driveApiCall('GET',
+      `https://www.googleapis.com/drive/v3/files/${file.id}?alt=media`
+    );
+    const data = await r.json();
+    const incoming = Array.isArray(data) ? data : (data.entries || []);
+    const valid = incoming.filter(x => x.id && x.timestamp && Array.isArray(x.tags));
+    const existingIds = new Set(entries.map(x=>x.id));
+    const newEntries = valid.filter(x=>!existingIds.has(x.id));
+    entries = [...entries, ...newEntries].sort((a,b)=>b.timestamp.localeCompare(a.timestamp));
+    if(data.tagRoles) tagRoles = {...data.tagRoles, ...tagRoles};
+    if(data.tagMeta)  tagMeta  = {...data.tagMeta,  ...tagMeta};
+    save(); render();
+    showToast(`✓ loaded — ${newEntries.length} new entries merged`, 'green');
+  } catch(e) {
+    showToast('✕ Drive load failed: ' + e.message, 'red');
+  }
+  if(btn) btn.disabled = false;
+}
+
 // init
+renderDriveArea();
 render();
 </script>
 </body>
