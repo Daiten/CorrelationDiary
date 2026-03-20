@@ -379,6 +379,8 @@ function save() {
   try { localStorage.setItem(STORAGE_KEY, JSON.stringify(entries)); } catch{}
   try { localStorage.setItem(ROLES_KEY,   JSON.stringify(tagRoles)); } catch{}
   try { localStorage.setItem(META_KEY,    JSON.stringify(tagMeta));  } catch{}
+  // Sync meta to cloud whenever roles/meta change
+  if(typeof fbPushMetaDebounced === 'function') fbPushMetaDebounced();
 }
 
 function setRole(tag, role) {
@@ -702,6 +704,11 @@ function addEntry() {
   if(pp) pp.style.display='none';
 
   save();
+  // Auto-push this entry to cloud
+  if(typeof fbPushEntry === 'function') {
+    setSyncStatus('saving…', '#4a8090');
+    fbPushEntry(entry).then(() => setSyncStatus('synced', '#2a7060'));
+  }
   const btn = document.getElementById('log-btn');
   btn.textContent = '✓ logged';
   btn.classList.add('flash');
@@ -777,6 +784,10 @@ function renderInlineRolePicker(tags) {
 function deleteEntry(id) {
   entries = entries.filter(e=>e.id!==id);
   save(); render();
+  // Remove from cloud too
+  if(fbUser && typeof colEntries === 'function') {
+    colEntries().doc(id).delete().catch(e => console.error('delete sync failed:', e));
+  }
 }
 
 function startEdit(id) {
@@ -809,6 +820,11 @@ function saveEdit(id) {
     return {...e, tags, raw:inp.value.trim(), numericValues, ...(newTimestamp ? {timestamp: newTimestamp} : {})};
   });
   entries.sort((a,b) => b.timestamp.localeCompare(a.timestamp));
+  const updated = entries.find(e => e.id===id);
+  if(updated && typeof fbPushEntry === 'function') {
+    setSyncStatus('saving…', '#4a8090');
+    fbPushEntry(updated).then(() => setSyncStatus('synced', '#2a7060'));
+  }
   save(); render();
 }
 
@@ -1840,6 +1856,19 @@ firebase.initializeApp(firebaseConfig);
 const fbAuth = firebase.auth();
 const fbDb   = firebase.firestore();
 let fbUser = null;
+let fbSyncing = false;
+
+// ── Firestore path helpers ──
+function colEntries() { return fbDb.collection('users').doc(fbUser.uid).collection('entries'); }
+function docMeta()    { return fbDb.collection('users').doc(fbUser.uid).collection('data').doc('meta'); }
+
+// ── Status indicator ──
+function setSyncStatus(msg, color) {
+  const el = document.getElementById('sync-status');
+  if(!el) return;
+  el.textContent = msg;
+  el.style.color = color || '#2a6070';
+}
 
 function renderFbArea() {
   const el = document.getElementById('drive-area');
@@ -1849,9 +1878,8 @@ function renderFbArea() {
     return;
   }
   el.innerHTML = `
-    <span class="guser" title="${escHtml(fbUser.email||'')}">☁ ${escHtml(fbUser.displayName||fbUser.email||'signed in')}</span>
-    <button class="fb-btn" onclick="fbPush()" id="fb-push-btn" title="Push local data to cloud">↑ push</button>
-    <button class="fb-btn" onclick="fbPull()" id="fb-pull-btn" title="Pull cloud data (merges)">↓ pull</button>
+    <span class="guser" title="${escHtml(fbUser.email||'')}">☁ ${escHtml(fbUser.displayName||fbUser.email||'')}</span>
+    <span id="sync-status" style="font-size:10px;color:#2a6070">synced</span>
     <button class="io-btn" onclick="fbSignOut()" style="font-size:9px;padding:2px 6px" title="Sign out">✕</button>`;
 }
 
@@ -1861,57 +1889,79 @@ function fbSignIn() {
 }
 
 function fbSignOut() {
-  fbAuth.signOut().then(() => showToast('signed out', 'green'));
+  fbAuth.signOut().then(() => { renderFbArea(); showToast('signed out', 'green'); });
 }
 
-fbAuth.onAuthStateChanged(user => {
+// ── On sign-in: pull everything from cloud, then we're live ──
+fbAuth.onAuthStateChanged(async user => {
   fbUser = user;
   renderFbArea();
   if(user) {
     showToast('✓ signed in as ' + (user.email||''), 'green');
-    fbPull(true);
+    await fbPullAll();
   }
 });
 
-function fbDocRef() {
-  return fbDb.collection('users').doc(fbUser.uid).collection('data').doc('main');
-}
-
-async function fbPush() {
-  if(!fbUser) { showToast('Sign in first', 'red'); return; }
-  const btn = document.getElementById('fb-push-btn');
-  if(btn) btn.disabled = true;
+// ── Pull all cloud data on sign-in (merge into local) ──
+async function fbPullAll() {
+  if(!fbUser) return;
+  setSyncStatus('syncing…', '#4a8090');
   try {
-    await fbDocRef().set({ version:2, savedAt:new Date().toISOString(), entries, tagRoles, tagMeta });
-    showToast(`✓ pushed to cloud (${entries.length} entries)`, 'green');
-  } catch(e) { showToast('✕ push failed: ' + e.message, 'red'); }
-  if(btn) btn.disabled = false;
-}
+    // Pull entries
+    const snap = await colEntries().get();
+    const existingIds = new Set(entries.map(e => e.id));
+    let added = 0;
+    snap.forEach(doc => {
+      const e = doc.data();
+      if(e.id && e.timestamp && Array.isArray(e.tags) && !existingIds.has(e.id)) {
+        entries.push(e);
+        added++;
+      }
+    });
+    if(added) entries.sort((a,b) => b.timestamp.localeCompare(a.timestamp));
 
-async function fbPull(silent) {
-  if(!fbUser) { if(!silent) showToast('Sign in first', 'red'); return; }
-  const btn = document.getElementById('fb-pull-btn');
-  if(btn) btn.disabled = true;
-  try {
-    const snap = await fbDocRef().get();
-    if(!snap.exists) {
-      if(!silent) showToast('No cloud data yet — push first', 'red');
-      if(btn) btn.disabled = false;
-      return;
+    // Pull meta (tagRoles + tagMeta)
+    const metaSnap = await docMeta().get();
+    if(metaSnap.exists) {
+      const m = metaSnap.data();
+      if(m.tagRoles) tagRoles = {...m.tagRoles, ...tagRoles};
+      if(m.tagMeta)  tagMeta  = {...m.tagMeta,  ...tagMeta};
     }
-    const data = snap.data();
-    const incoming = Array.isArray(data.entries) ? data.entries : [];
-    const valid = incoming.filter(x => x.id && x.timestamp && Array.isArray(x.tags));
-    const existingIds = new Set(entries.map(x => x.id));
-    const newEntries = valid.filter(x => !existingIds.has(x.id));
-    entries = [...entries, ...newEntries].sort((a,b) => b.timestamp.localeCompare(a.timestamp));
-    if(data.tagRoles) tagRoles = {...data.tagRoles, ...tagRoles};
-    if(data.tagMeta)  tagMeta  = {...data.tagMeta,  ...tagMeta};
+
     save(); render();
-    if(!silent) showToast(`✓ pulled — ${newEntries.length} new entries merged`, 'green');
-    else if(newEntries.length) showToast(`✓ synced ${newEntries.length} new entries from cloud`, 'green');
-  } catch(e) { if(!silent) showToast('✕ pull failed: ' + e.message, 'red'); }
-  if(btn) btn.disabled = false;
+    setSyncStatus('synced', '#2a7060');
+    if(added) showToast(`✓ synced ${added} entries from cloud`, 'green');
+  } catch(e) {
+    setSyncStatus('sync error', '#aa4040');
+    showToast('✕ sync failed: ' + e.message, 'red');
+  }
+}
+
+// ── Push a single entry to Firestore ──
+async function fbPushEntry(entry) {
+  if(!fbUser) return;
+  try {
+    await colEntries().doc(entry.id).set(entry);
+  } catch(e) {
+    setSyncStatus('sync error', '#aa4040');
+    console.error('fbPushEntry failed:', e);
+  }
+}
+
+// ── Push meta (tagRoles + tagMeta) — debounced ──
+let fbMetaTimer = null;
+function fbPushMetaDebounced() {
+  if(!fbUser) return;
+  clearTimeout(fbMetaTimer);
+  fbMetaTimer = setTimeout(async () => {
+    try {
+      await docMeta().set({ tagRoles, tagMeta, savedAt: new Date().toISOString() });
+      setSyncStatus('synced', '#2a7060');
+    } catch(e) {
+      setSyncStatus('sync error', '#aa4040');
+      console.error('fbPushMeta failed:', e);
+    }
+  }, 1500); // wait 1.5s after last change before writing
 }
 
 // init
