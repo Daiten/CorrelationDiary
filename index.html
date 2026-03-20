@@ -1920,13 +1920,15 @@ async function fbPullAll() {
     });
     if(added) entries.sort((a,b) => b.timestamp.localeCompare(a.timestamp));
 
-    // Pull meta (tagRoles + tagMeta)
-    const metaSnap = await docMeta().get();
-    if(metaSnap.exists) {
-      const m = metaSnap.data();
-      if(m.tagRoles) tagRoles = {...m.tagRoles, ...tagRoles};
-      if(m.tagMeta)  tagMeta  = {...m.tagMeta,  ...tagMeta};
-    }
+    // Pull meta (tagRoles + tagMeta) from separate docs
+    const [rolesSnap, metaSnap] = await Promise.all([
+      fbDb.collection('users').doc(fbUser.uid).collection('data').doc('tagRoles').get(),
+      fbDb.collection('users').doc(fbUser.uid).collection('data').doc('tagMeta').get()
+    ]);
+    if(rolesSnap.exists && rolesSnap.data().tagRoles)
+      tagRoles = {...rolesSnap.data().tagRoles, ...tagRoles};
+    if(metaSnap.exists && metaSnap.data().tagMeta)
+      tagMeta = {...metaSnap.data().tagMeta, ...tagMeta}; // local wins (preserves images)
 
     save(); render();
     setSyncStatus('synced', '#2a7060');
@@ -1948,20 +1950,30 @@ async function fbPushEntry(entry) {
   }
 }
 
-// ── Push meta (tagRoles + tagMeta) — debounced ──
+// ── Push meta (tagRoles + tagMeta) — debounced, images stripped ──
 let fbMetaTimer = null;
 function fbPushMetaDebounced() {
   if(!fbUser) return;
   clearTimeout(fbMetaTimer);
   fbMetaTimer = setTimeout(async () => {
     try {
-      await docMeta().set({ tagRoles, tagMeta, savedAt: new Date().toISOString() });
+      // Strip base64 images — they're too large and already in localStorage
+      const metaNoImages = {};
+      for(const [k,v] of Object.entries(tagMeta)) {
+        const {img, ...rest} = v;
+        if(Object.keys(rest).length) metaNoImages[k] = rest;
+      }
+      // Store tagRoles and tagMeta as separate small documents
+      const batch = fbDb.batch();
+      batch.set(fbDb.collection('users').doc(fbUser.uid).collection('data').doc('tagRoles'), { tagRoles, savedAt: new Date().toISOString() });
+      batch.set(fbDb.collection('users').doc(fbUser.uid).collection('data').doc('tagMeta'),  { tagMeta: metaNoImages, savedAt: new Date().toISOString() });
+      await batch.commit();
       setSyncStatus('synced', '#2a7060');
     } catch(e) {
       setSyncStatus('sync error', '#aa4040');
       console.error('fbPushMeta failed:', e);
     }
-  }, 1500); // wait 1.5s after last change before writing
+  }, 1500);
 }
 
 // init
